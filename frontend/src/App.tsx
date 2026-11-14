@@ -12,7 +12,7 @@ function App() {
   const [loading, setLoading] = useState(false)
 
   const sendMessage = async () => {
-    if (!message.trim()) return
+     if (!message.trim()) return
     setLoading(true)
     setReply('')
     try {
@@ -22,9 +22,17 @@ function App() {
         body: JSON.stringify({ message, role: 'intern_backend' })
       })
       const data = await res.json()
-      setReply(data.reply || data.error)
-    } catch (e) {
-      setReply('Ошибка: бэкенд не отвечает. Проверь, запущен ли go run main.go')
+      console.log("Ответ от бэкенда:", data) // <-- ВЫВЕДЕТ В КОНСОЛЬ
+      
+      if (data.reply) {
+        setReply(data.reply)
+      } else if (data.error) {
+        setReply("ОШИБКА БЭКЕНДА: " + data.error)
+      } else {
+        setReply("Странный ответ: " + JSON.stringify(data))
+      }
+    } catch (e: any) {
+      setReply('Ошибка сети: ' + e.message)
     } finally {
       setLoading(false)
     }

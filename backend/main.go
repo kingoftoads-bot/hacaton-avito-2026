@@ -3,17 +3,20 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
-// Структуры для запроса к Ollama
+// ==========================================
+// СТРУКТУРЫ
+// ==========================================
 type OllamaRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
@@ -30,45 +33,37 @@ type OllamaResponse struct {
 }
 
 func main() {
-	port := os.Getenv("BACKEND_PORT")
-	if port == "" {
-		port = "8080"
-	}
-	ollamaURL := os.Getenv("OLLAMA_BASE_URL")
-	if ollamaURL == "" {
-		ollamaURL = "http://localhost:11434" // Для локального запуска
-	}
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
-	if ollamaModel == "" {
-		ollamaModel = "gemma3:4b-it-qat"
-	}
+	db := InitDB()
+	SeedDB(db)
+	defer db.Close()
+
+	port := "8080"
+	ollamaURL := "http://localhost:11434"
+	ollamaModel := "gemma3:4b-it-qat"
 
 	r := gin.Default()
 	r.Use(cors.Default())
 
-	// Проверка здоровья
-	r.GET("/api/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "model": ollamaModel})
-	})
-
-	// Чат с ИИ
 	r.POST("/api/chat", func(c *gin.Context) {
 		var req struct {
 			Message string `json:"message"`
-			Role    string `json:"role"`
 		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
+		c.ShouldBindJSON(&req)
 
-		// Системный промпт: объясняем боту, кто он и как себя вести
-		systemPrompt := `Ты — AI-buddy, ИИ-наставник для стажёров компании Авито. 
-Твоя задача — помогать стажёру адаптироваться. Отвечай кратко, дружелюбно и по делу.
-Если тебя спрашивают про отгул или доступы, скажи, что можешь помочь оформить заявку.
-Не придумывай несуществующие правила компании.`
+		// 1. УМНЫЙ ПРОМПТ (ReAct-подход)
+		// Мы объясняем модели правила игры текстом, а не через Tools API
+		systemPrompt := `Ты — AI-buddy, ИИ-наставник стажёров Авито. 
+Если пользователь спрашивает про задачи, доступы или отгул, ты должен понять, какой период его интересует.
+Если тебе нужны задачи из базы, напиши СТРОГО такую команду: [GET_TASKS: <период>]
+Где <период> — это "1 неделя", "1 месяц" или "3 месяц".
 
-		// Формируем запрос к Ollama
+Пример твоего ответа на вопрос "что делать на первой неделе?":
+[GET_TASKS: 1 неделя]
+
+Пример ответа на "привет":
+Привет! Я твой ИИ-наставник. Спроси меня о задачах на неделю.`
+
+		// 2. Первый запрос к модели (чтобы она поняла интент)
 		ollamaReq := OllamaRequest{
 			Model: ollamaModel,
 			Messages: []Message{
@@ -79,26 +74,56 @@ func main() {
 		}
 
 		jsonData, _ := json.Marshal(ollamaReq)
-
-		// Таймаут 2 минуты (локальные модели думают медленно)
 		client := &http.Client{Timeout: 2 * time.Minute}
+
 		resp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Не могу достучаться до Ollama: " + err.Error()})
+			c.JSON(500, gin.H{"error": "Ollama недоступна: " + err.Error()})
 			return
 		}
 		defer resp.Body.Close()
 
 		body, _ := io.ReadAll(resp.Body)
 		var ollamaResp OllamaResponse
-		if err := json.Unmarshal(body, &ollamaResp); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка парсинга ответа от Ollama"})
-			return
+		json.Unmarshal(body, &ollamaResp)
+
+		aiAnswer := ollamaResp.Message.Content
+
+		// 3. Проверяем: если модель написала [GET_TASKS: ...], мы сами лезем в базу
+		if strings.Contains(aiAnswer, "[GET_TASKS:") {
+			// Вытаскиваем период из скобок
+			startIdx := strings.Index(aiAnswer, "[GET_TASKS:") + len("[GET_TASKS:")
+			endIdx := strings.Index(aiAnswer[startIdx:], "]")
+			period := ""
+			if endIdx != -1 {
+				period = strings.TrimSpace(aiAnswer[startIdx : startIdx+endIdx])
+			}
+
+			// Идем в PostgreSQL
+			rows, err := db.Query("SELECT title, description FROM tasks WHERE LOWER(period) LIKE LOWER($1)", "%"+period+"%")
+			if err == nil {
+				var result strings.Builder
+				result.WriteString(fmt.Sprintf("Вот твои задачи на **%s**:\n\n", period))
+				count := 0
+				for rows.Next() {
+					var title, desc string
+					rows.Scan(&title, &desc)
+					result.WriteString(fmt.Sprintf("📌 **%s**\n%s\n\n", title, desc))
+					count++
+				}
+				rows.Close()
+
+				if count > 0 {
+					c.JSON(200, gin.H{"reply": result.String()})
+					return
+				}
+			}
 		}
 
-		c.JSON(http.StatusOK, gin.H{"reply": ollamaResp.Message.Content})
+		// 4. Если команды не было — возвращаем обычный ответ
+		c.JSON(200, gin.H{"reply": aiAnswer})
 	})
 
-	log.Printf("Сервер запущен на порту %s. Модель: %s", port, ollamaModel)
+	log.Printf("Сервер запущен. Модель: %s", ollamaModel)
 	r.Run(":" + port)
 }
