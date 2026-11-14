@@ -1,0 +1,7 @@
+.env
+node_modules/
+backend/bin/
+*.log
+coverage.out
+coverage.html
+.DS_Store
