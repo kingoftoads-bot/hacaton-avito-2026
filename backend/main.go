@@ -14,9 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ==========================================
-// СТРУКТУРЫ
-// ==========================================
 type OllamaRequest struct {
 	Model    string    `json:"model"`
 	Messages []Message `json:"messages"`
@@ -47,23 +44,31 @@ func main() {
 	r.POST("/api/chat", func(c *gin.Context) {
 		var req struct {
 			Message string `json:"message"`
+			Role    string `json:"role"`
 		}
 		c.ShouldBindJSON(&req)
 
-		// 1. УМНЫЙ ПРОМПТ (ReAct-подход)
-		// Мы объясняем модели правила игры текстом, а не через Tools API
+		if strings.Contains(strings.ToLower(req.Message), "отгул") || strings.Contains(strings.ToLower(req.Message), "отпуск") {
+			// Имитируем вызов корпоративного сервиса
+			absID := fmt.Sprintf("ABS-%d", time.Now().Unix()%10000)
+			reply := fmt.Sprintf("📅 Я оформил для тебя заявку на отсутствие.\n\n**Номер заявки:** `%s`\n**Статус:** На согласовании у руководителя.\n\nЯ пришлю уведомление, когда заявку одобрят.", absID)
+			c.JSON(200, gin.H{"reply": reply})
+			return
+		}
+
+		if strings.Contains(strings.ToLower(req.Message), "доступ") || strings.Contains(strings.ToLower(req.Message), "jira") || strings.Contains(strings.ToLower(req.Message), "confluence") {
+			// Имитируем вызов сервиса доступов
+			accID := fmt.Sprintf("ACC-%d", time.Now().Unix()%10000)
+			reply := fmt.Sprintf("🔐 Я создал заявку на доступ.\n\n**Номер заявки:** `%s`\n**Ресурс:** Jira / Confluence\n**Уровень прав:** Чтение\n\nЗаявка направлена владельцу проекта.", accID)
+			c.JSON(200, gin.H{"reply": reply})
+			return
+		}
+
 		systemPrompt := `Ты — AI-buddy, ИИ-наставник стажёров Авито. 
-Если пользователь спрашивает про задачи, доступы или отгул, ты должен понять, какой период его интересует.
-Если тебе нужны задачи из базы, напиши СТРОГО такую команду: [GET_TASKS: <период>]
+Если пользователь спрашивает про задачи, напиши СТРОГО такую команду: [GET_TASKS: <период>]
 Где <период> — это "1 неделя", "1 месяц" или "3 месяц".
+Если это просто приветствие, поздоровайся.`
 
-Пример твоего ответа на вопрос "что делать на первой неделе?":
-[GET_TASKS: 1 неделя]
-
-Пример ответа на "привет":
-Привет! Я твой ИИ-наставник. Спроси меня о задачах на неделю.`
-
-		// 2. Первый запрос к модели (чтобы она поняла интент)
 		ollamaReq := OllamaRequest{
 			Model: ollamaModel,
 			Messages: []Message{
@@ -86,41 +91,65 @@ func main() {
 		body, _ := io.ReadAll(resp.Body)
 		var ollamaResp OllamaResponse
 		json.Unmarshal(body, &ollamaResp)
-
 		aiAnswer := ollamaResp.Message.Content
 
-		// 3. Проверяем: если модель написала [GET_TASKS: ...], мы сами лезем в базу
+		// Если модель запросила задачи
 		if strings.Contains(aiAnswer, "[GET_TASKS:") {
-			// Вытаскиваем период из скобок
 			startIdx := strings.Index(aiAnswer, "[GET_TASKS:") + len("[GET_TASKS:")
 			endIdx := strings.Index(aiAnswer[startIdx:], "]")
-			period := ""
+			period := "1 неделя"
 			if endIdx != -1 {
 				period = strings.TrimSpace(aiAnswer[startIdx : startIdx+endIdx])
 			}
 
-			// Идем в PostgreSQL
-			rows, err := db.Query("SELECT title, description FROM tasks WHERE LOWER(period) LIKE LOWER($1)", "%"+period+"%")
+			// Фильтруем задачи для наставника (убираем "Добавь", "Проверь" и т.д.)
+			query := `SELECT title, description FROM tasks 
+			          WHERE LOWER(period) LIKE LOWER($1) 
+			          AND LOWER(title) NOT LIKE 'добавь%' 
+			          AND LOWER(title) NOT LIKE 'проверь%' 
+			          AND LOWER(title) NOT LIKE 'назначь%' 
+			          AND LOWER(title) NOT LIKE 'запроси%'`
+
+			rows, err := db.Query(query, "%"+period+"%")
 			if err == nil {
-				var result strings.Builder
-				result.WriteString(fmt.Sprintf("Вот твои задачи на **%s**:\n\n", period))
+				var rawTasks strings.Builder
 				count := 0
 				for rows.Next() {
 					var title, desc string
 					rows.Scan(&title, &desc)
-					result.WriteString(fmt.Sprintf("📌 **%s**\n%s\n\n", title, desc))
+					rawTasks.WriteString(fmt.Sprintf("- %s: %s\n", title, desc))
 					count++
 				}
 				rows.Close()
 
 				if count > 0 {
-					c.JSON(200, gin.H{"reply": result.String()})
+					// Второй запрос к ИИ, чтобы красиво оформить
+					beautifyPrompt := fmt.Sprintf("Ты — дружелюбный ИИ-наставник Авито. Вот список задач стажёра на период \"%s\":\n%s\nНапиши приветственное сообщение и перечисли эти задачи в виде красивого нумерованного списка. Обращайся на 'ты'.", period, rawTasks.String())
+					beautifyReq := OllamaRequest{
+						Model:    ollamaModel,
+						Messages: []Message{{Role: "user", Content: beautifyPrompt}},
+						Stream:   false,
+					}
+					beautifyJson, _ := json.Marshal(beautifyReq)
+					beautifyResp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(beautifyJson))
+					if err == nil {
+						defer beautifyResp.Body.Close()
+						body2, _ := io.ReadAll(beautifyResp.Body)
+						var finalResp OllamaResponse
+						json.Unmarshal(body2, &finalResp)
+						if finalResp.Message.Content != "" {
+							c.JSON(200, gin.H{"reply": finalResp.Message.Content})
+							return
+						}
+					}
+					c.JSON(200, gin.H{"reply": "Вот твои задачи на " + period + ":\n\n" + rawTasks.String()})
 					return
 				}
 			}
+			c.JSON(200, gin.H{"reply": "На этот период задач пока нет."})
+			return
 		}
 
-		// 4. Если команды не было — возвращаем обычный ответ
 		c.JSON(200, gin.H{"reply": aiAnswer})
 	})
 
