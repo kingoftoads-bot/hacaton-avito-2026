@@ -41,6 +41,67 @@ func main() {
 	r := gin.Default()
 	r.Use(cors.Default())
 
+	// ==========================================
+	// ЭНДПОИНТЫ ДЛЯ ТРЕКЕРА ЗАДАЧ И ПРОГРЕССА
+	// ==========================================
+
+	// 1. Прогресс
+	r.GET("/api/progress", func(c *gin.Context) {
+		var total, done int
+		db.QueryRow("SELECT COUNT(*) FROM tasks WHERE LOWER(period) LIKE '%недел%'").Scan(&total)
+		db.QueryRow("SELECT COUNT(*) FROM tasks WHERE LOWER(period) LIKE '%недел%' AND is_done = TRUE").Scan(&done)
+
+		percent := 0.0
+		if total > 0 {
+			percent = float64(done) / float64(total) * 100
+		}
+		c.JSON(http.StatusOK, gin.H{"total": total, "done": done, "percent": percent})
+	})
+
+	// 2. Получение списка задач для чекбоксов
+	r.GET("/api/tasks", func(c *gin.Context) {
+		query := `SELECT id, title, description, is_done FROM tasks 
+		          WHERE LOWER(period) LIKE '%недел%' 
+		          AND LOWER(title) NOT LIKE 'добавь%' 
+		          AND LOWER(title) NOT LIKE 'проверь%' 
+		          AND LOWER(title) NOT LIKE 'назначь%' 
+		          AND LOWER(title) NOT LIKE 'запроси%'
+		          AND LOWER(title) NOT LIKE 'работа с наставником%'`
+
+		rows, err := db.Query(query)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Ошибка БД"})
+			return
+		}
+		defer rows.Close()
+
+		var tasks []map[string]interface{}
+		for rows.Next() {
+			var id int
+			var title, desc string
+			var isDone bool
+			rows.Scan(&id, &title, &desc, &isDone)
+			tasks = append(tasks, map[string]interface{}{
+				"id": id, "title": title, "description": desc, "is_done": isDone,
+			})
+		}
+		c.JSON(200, tasks)
+	})
+
+	// 3. Отметка задачи выполненной
+	r.POST("/api/tasks/:id/complete", func(c *gin.Context) {
+		id := c.Param("id")
+		_, err := db.Exec("UPDATE tasks SET is_done = TRUE WHERE id = $1", id)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "Не удалось обновить задачу"})
+			return
+		}
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// ==========================================
+	// ОСНОВНОЙ ЧАТ
+	// ==========================================
 	r.POST("/api/chat", func(c *gin.Context) {
 		var req struct {
 			Message string `json:"message"`
@@ -48,26 +109,27 @@ func main() {
 		}
 		c.ShouldBindJSON(&req)
 
+		// Сценарий 1: Отгул
 		if strings.Contains(strings.ToLower(req.Message), "отгул") || strings.Contains(strings.ToLower(req.Message), "отпуск") {
-			// Имитируем вызов корпоративного сервиса
 			absID := fmt.Sprintf("ABS-%d", time.Now().Unix()%10000)
 			reply := fmt.Sprintf("📅 Я оформил для тебя заявку на отсутствие.\n\n**Номер заявки:** `%s`\n**Статус:** На согласовании у руководителя.\n\nЯ пришлю уведомление, когда заявку одобрят.", absID)
 			c.JSON(200, gin.H{"reply": reply})
 			return
 		}
 
+		// Сценарий 2: Доступы
 		if strings.Contains(strings.ToLower(req.Message), "доступ") || strings.Contains(strings.ToLower(req.Message), "jira") || strings.Contains(strings.ToLower(req.Message), "confluence") {
-			// Имитируем вызов сервиса доступов
 			accID := fmt.Sprintf("ACC-%d", time.Now().Unix()%10000)
 			reply := fmt.Sprintf("🔐 Я создал заявку на доступ.\n\n**Номер заявки:** `%s`\n**Ресурс:** Jira / Confluence\n**Уровень прав:** Чтение\n\nЗаявка направлена владельцу проекта.", accID)
 			c.JSON(200, gin.H{"reply": reply})
 			return
 		}
 
-		systemPrompt := `Ты — AI-buddy, ИИ-наставник стажёров Авито. 
-Если пользователь спрашивает про задачи, напиши СТРОГО такую команду: [GET_TASKS: <период>]
+		// Сценарий 3: Задачи (через LLM)
+		systemPrompt := `Ты — AI-buddy, дружелюбный ИИ-наставник стажёров Авито. 
+Если пользователь спрашивает про задачи (что делать, план на неделю и т.д.), напиши СТРОГО такую команду: [GET_TASKS: <период>]
 Где <период> — это "1 неделя", "1 месяц" или "3 месяц".
-Если это просто приветствие, поздоровайся.`
+На ЛЮБЫЕ другие вопросы (кто такие тимлиды, как дела, расскажи про Авито) отвечай кратко, вежливо и по делу.`
 
 		ollamaReq := OllamaRequest{
 			Model: ollamaModel,
@@ -80,7 +142,6 @@ func main() {
 
 		jsonData, _ := json.Marshal(ollamaReq)
 		client := &http.Client{Timeout: 2 * time.Minute}
-
 		resp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(jsonData))
 		if err != nil {
 			c.JSON(500, gin.H{"error": "Ollama недоступна: " + err.Error()})
@@ -93,7 +154,6 @@ func main() {
 		json.Unmarshal(body, &ollamaResp)
 		aiAnswer := ollamaResp.Message.Content
 
-		// Если модель запросила задачи
 		if strings.Contains(aiAnswer, "[GET_TASKS:") {
 			startIdx := strings.Index(aiAnswer, "[GET_TASKS:") + len("[GET_TASKS:")
 			endIdx := strings.Index(aiAnswer[startIdx:], "]")
@@ -102,13 +162,13 @@ func main() {
 				period = strings.TrimSpace(aiAnswer[startIdx : startIdx+endIdx])
 			}
 
-			// Фильтруем задачи для наставника (убираем "Добавь", "Проверь" и т.д.)
 			query := `SELECT title, description FROM tasks 
 			          WHERE LOWER(period) LIKE LOWER($1) 
 			          AND LOWER(title) NOT LIKE 'добавь%' 
 			          AND LOWER(title) NOT LIKE 'проверь%' 
 			          AND LOWER(title) NOT LIKE 'назначь%' 
-			          AND LOWER(title) NOT LIKE 'запроси%'`
+			          AND LOWER(title) NOT LIKE 'запроси%'
+			          AND LOWER(title) NOT LIKE 'работа с наставником%'`
 
 			rows, err := db.Query(query, "%"+period+"%")
 			if err == nil {
@@ -123,7 +183,6 @@ func main() {
 				rows.Close()
 
 				if count > 0 {
-					// Второй запрос к ИИ, чтобы красиво оформить
 					beautifyPrompt := fmt.Sprintf("Ты — дружелюбный ИИ-наставник Авито. Вот список задач стажёра на период \"%s\":\n%s\nНапиши приветственное сообщение и перечисли эти задачи в виде красивого нумерованного списка. Обращайся на 'ты'.", period, rawTasks.String())
 					beautifyReq := OllamaRequest{
 						Model:    ollamaModel,

@@ -32,16 +32,20 @@ func InitDB() *sql.DB {
 	}
 	fmt.Println("✅ Успешно подключились к PostgreSQL")
 
-	// Создаем таблицу
+	// Создаем таблицу с колонкой is_done
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS tasks (
 		id SERIAL PRIMARY KEY,
 		period TEXT,
 		title TEXT,
-		description TEXT
+		description TEXT,
+		is_done BOOLEAN DEFAULT FALSE
 	)`)
 	if err != nil {
 		log.Fatal("Ошибка создания таблицы:", err)
 	}
+
+	// Если база уже была создана ранее (без колонки is_done), добавляем ее
+	db.Exec("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS is_done BOOLEAN DEFAULT FALSE")
 
 	return db
 }
