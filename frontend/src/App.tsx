@@ -5,36 +5,24 @@ const AVITO_GREEN = '#97EB33'
 const AVITO_BLUE = '#009CF0'
 const AVITO_PURPLE = '#965EEB'
 
-type ChatMessage = {
-  role: 'user' | 'bot'
-  text: string
-}
-
-type Task = {
-  id: number
-  title: string
-  description: string
-  is_done: boolean
-}
+type ChatMessage = { role: 'user' | 'bot', text: string }
+type Task = { id: number, title: string, description: string, is_done: boolean }
 
 function App() {
-  const [input, setInput] = useState('')
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'bot', text: 'Привет! Я твой ИИ-наставник. Выбери свою роль вверху, чтобы я знал, как тебе помочь.' }
-  ])
-  const [loading, setLoading] = useState(false)
+  const [userName, setUserName] = useState('')
   const [userRole, setUserRole] = useState('intern_backend')
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [input, setInput] = useState('')
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [loading, setLoading] = useState(false)
   const [progress, setProgress] = useState({ total: 0, done: 0, percent: 0 })
   const [tasks, setTasks] = useState<Task[]>([])
 
-  // Загружаем прогресс и задачи при смене роли или после обновления
   const loadData = () => {
     fetch(`http://localhost:8080/api/progress?role=${userRole}`)
       .then(res => res.json())
       .then(data => setProgress(data))
 
-    // Загружаем задачи (в реальном проекте это отдельный эндпоинт, 
-    // но для простоты мы просто достанем их из ответа чата или сделаем запрос)
     fetch(`http://localhost:8080/api/tasks?role=${userRole}`)
       .then(res => res.json())
       .then(data => setTasks(data || []))
@@ -42,12 +30,12 @@ function App() {
   }
 
   useEffect(() => {
-    loadData()
-  }, [userRole])
+    if (isLoggedIn) loadData()
+  }, [userRole, isLoggedIn])
 
   const completeTask = async (id: number) => {
     await fetch(`http://localhost:8080/api/tasks/${id}/complete`, { method: 'POST' })
-    loadData() // Обновляем прогресс и список
+    await loadData()
   }
 
   const sendMessage = async (text: string) => {
@@ -60,7 +48,7 @@ function App() {
       const res = await fetch('http://localhost:8080/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, role: userRole })
+        body: JSON.stringify({ message: text, role: userRole, name: userName })
       })
       const data = await res.json()
       setMessages(prev => [...prev, { role: 'bot', text: data.reply || 'Ошибка: пустой ответ' }])
@@ -71,105 +59,111 @@ function App() {
     }
   }
 
-  return (
-    <div style={{ fontFamily: 'Arial, sans-serif', backgroundColor: '#F5F5F5', minHeight: '100vh', padding: '40px 20px', display: 'flex', justifyContent: 'center' }}>
-      <div style={{ width: '100%', maxWidth: '800px' }}>
-        
-        {/* Шапка */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ display: 'flex' }}>
-              <div style={{ width: '25px', height: '25px', borderRadius: '50%', background: AVITO_GREEN }}></div>
-              <div style={{ width: '25px', height: '25px', borderRadius: '50%', background: AVITO_BLUE, marginLeft: '-10px' }}></div>
-              <div style={{ width: '25px', height: '25px', borderRadius: '50%', background: AVITO_PURPLE, marginLeft: '-10px' }}></div>
-            </div>
-            <h1 style={{ margin: 0, fontSize: '24px' }}>AI-buddy</h1>
+  if (!isLoggedIn) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', background: '#F5F5F5', fontFamily: 'Arial' }}>
+        <div style={{ background: '#fff', padding: '40px', borderRadius: '16px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', width: '350px' }}>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', justifyContent: 'center' }}>
+            <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: AVITO_GREEN }}></div>
+            <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: AVITO_BLUE }}></div>
+            <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: AVITO_PURPLE }}></div>
           </div>
-          
+          <h2 style={{ textAlign: 'center', marginTop: 0 }}>Вход в AI-buddy</h2>
+          <input 
+            placeholder="Введи свое имя" 
+            value={userName} 
+            onChange={e => setUserName(e.target.value)}
+            style={{ width: '100%', padding: '12px', marginBottom: '15px', borderRadius: '8px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+          />
           <select 
             value={userRole} 
-            onChange={(e) => setUserRole(e.target.value)}
-            style={{ padding: '8px 12px', borderRadius: '8px', border: '1px solid #ccc', fontSize: '14px', cursor: 'pointer' }}
+            onChange={e => setUserRole(e.target.value)}
+            style={{ width: '100%', padding: '12px', marginBottom: '20px', borderRadius: '8px', border: '1px solid #ccc', boxSizing: 'border-box' }}
           >
             <option value="intern_backend">Стажёр Backend</option>
             <option value="intern_frontend">Стажёр Frontend</option>
             <option value="mentor">Наставник</option>
           </select>
+          <button 
+            onClick={() => { if(userName.trim()) setIsLoggedIn(true); else alert('Введи имя!') }}
+            style={{ width: '100%', padding: '12px', background: AVITO_GREEN, border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}
+          >
+            Войти
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ fontFamily: 'Arial, sans-serif', backgroundColor: '#F5F5F5', minHeight: '100vh', padding: '20px' }}>
+      <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'grid', gridTemplateColumns: '1fr 350px', gap: '20px' }}>
+        <div style={{ background: '#fff', borderRadius: '12px', padding: '20px', display: 'flex', flexDirection: 'column', height: '85vh', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '15px' }}>
+            <div style={{ width: '30px', height: '30px', borderRadius: '50%', background: AVITO_GREEN }}></div>
+            <h2 style={{ margin: 0 }}>AI-buddy</h2>
+          </div>
+          
+          <div style={{ flex: 1, overflowY: 'auto', marginBottom: '20px' }}>
+            {messages.map((msg, i) => (
+              <div key={i} style={{ marginBottom: '15px', display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
+                <div style={{ padding: '12px 16px', borderRadius: '12px', maxWidth: '80%', background: msg.role === 'user' ? AVITO_GREEN : '#F0F0F0', color: '#000' }}>
+                  {msg.role === 'bot' ? <Markdown>{msg.text}</Markdown> : msg.text}
+                </div>
+              </div>
+            ))}
+            {loading && <div style={{ color: '#888', fontStyle: 'italic' }}>ИИ-наставник печатает...</div>}
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+            <button onClick={() => sendMessage('Какие у меня задачи?')} style={{ padding: '6px 12px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer', fontSize: '12px' }}>📋 Задачи</button>
+            <button onClick={() => sendMessage('Хочу отгул')} style={{ padding: '6px 12px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer', fontSize: '12px' }}>📅 Отгул</button>
+            <button onClick={() => sendMessage('Доступ к Jira')} style={{ padding: '6px 12px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer', fontSize: '12px' }}>🔐 Доступ</button>
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendMessage(input)} placeholder="Напиши сообщение..." style={{ flex: 1, padding: '12px', border: '1px solid #ccc', borderRadius: '8px', fontSize: '16px' }} />
+            <button onClick={() => sendMessage(input)} disabled={loading} style={{ padding: '12px 24px', background: AVITO_GREEN, border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>Отправить</button>
+          </div>
         </div>
 
-        {/* Полоса прогресса */}
-        <div style={{ marginBottom: '20px', background: '#fff', padding: '15px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', color: '#666' }}>
-            <span>Прогресс адаптации</span>
-            <span>{progress.done} из {progress.total} задач</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '15px', marginBottom: '15px' }}>
+              <div style={{ width: '50px', height: '50px', borderRadius: '50%', background: AVITO_PURPLE, color: '#fff', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '20px', fontWeight: 'bold' }}>
+                {userName.charAt(0)}
+              </div>
+              <div>
+                <h3 style={{ margin: 0 }}>{userName}</h3>
+                <p style={{ margin: 0, color: '#666', fontSize: '14px' }}>{userRole === 'intern_backend' ? 'Backend-стажёр' : userRole === 'intern_frontend' ? 'Frontend-стажёр' : 'Наставник'}</p>
+              </div>
+            </div>
+            
+            <div style={{ marginBottom: '15px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', color: '#666' }}>
+                <span>Прогресс</span>
+                <span>{progress.done} / {progress.total}</span>
+              </div>
+              <div style={{ width: '100%', height: '8px', background: '#E0E0E0', borderRadius: '4px', overflow: 'hidden' }}>
+                <div style={{ width: `${progress.percent}%`, height: '100%', background: AVITO_GREEN, transition: 'width 0.3s' }}></div>
+              </div>
+            </div>
           </div>
-          <div style={{ width: '100%', height: '10px', background: '#E0E0E0', borderRadius: '5px', overflow: 'hidden' }}>
-            <div style={{ width: `${progress.percent}%`, height: '100%', background: AVITO_GREEN, transition: 'width 0.3s' }}></div>
-          </div>
-        </div>
 
-        {/* Блок задач (трекер) */}
-        {tasks.length > 0 && (
-          <div style={{ marginBottom: '20px', background: '#fff', padding: '15px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
-            <h3 style={{ marginTop: 0, fontSize: '16px' }}>Мои задачи на неделю</h3>
+          <div style={{ background: '#fff', borderRadius: '12px', padding: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)', flex: 1, overflowY: 'auto' }}>
+            <h3 style={{ marginTop: 0, fontSize: '16px' }}>Мои задачи</h3>
+            {tasks.length === 0 ? <p style={{ color: '#888', fontSize: '14px' }}>Все задачи выполнены!</p> : null}
             {tasks.map(task => (
-              <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', padding: '10px', background: '#F9F9F9', borderRadius: '8px' }}>
-                <input 
-                  type="checkbox" 
-                  checked={task.is_done} 
-                  onChange={() => completeTask(task.id)}
-                  style={{ cursor: 'pointer', width: '18px', height: '18px' }}
-                />
-                <div style={{ flex: 1 }}>
-                  <strong style={{ fontSize: '14px', textDecoration: task.is_done ? 'line-through' : 'none' }}>{task.title}</strong>
-                  <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#666' }}>{task.description}</p>
+              <div key={task.id} style={{ display: 'flex', gap: '10px', marginBottom: '12px', padding: '10px', background: task.is_done ? '#F0F0F0' : '#F9F9F9', borderRadius: '8px' }}>
+                <input type="checkbox" checked={task.is_done} onChange={() => completeTask(task.id)} style={{ marginTop: '3px', cursor: 'pointer' }} />
+                <div>
+                  <strong style={{ fontSize: '13px', textDecoration: task.is_done ? 'line-through' : 'none', color: task.is_done ? '#888' : '#000' }}>{task.title}</strong>
+                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#666', textDecoration: task.is_done ? 'line-through' : 'none' }}>{task.description}</p>
                 </div>
               </div>
             ))}
           </div>
-        )}
-
-        {/* Область чата */}
-        <div style={{ background: '#fff', borderRadius: '12px', padding: '20px', minHeight: '300px', maxHeight: '400px', overflowY: 'auto', marginBottom: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
-          {messages.map((msg, i) => (
-            <div key={i} style={{ marginBottom: '15px', display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-              <div style={{ 
-                padding: '12px 16px', borderRadius: '12px', maxWidth: '80%',
-                background: msg.role === 'user' ? AVITO_GREEN : '#F0F0F0',
-                color: '#000'
-              }}>
-                {msg.role === 'bot' ? <Markdown>{msg.text}</Markdown> : msg.text}
-              </div>
-            </div>
-          ))}
-          {loading && <div style={{ color: '#888', fontStyle: 'italic' }}>ИИ-наставник печатает...</div>}
         </div>
-
-        {/* Кнопки быстрых действий */}
-        <div style={{ display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap' }}>
-          <button onClick={() => sendMessage('Какие у меня задачи на 1 неделю?')} style={{ padding: '8px 16px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer' }}>📋 Задачи на неделю</button>
-          <button onClick={() => sendMessage('Хочу взять отгул на завтра')} style={{ padding: '8px 16px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer' }}>📅 Оформить отгул</button>
-          <button onClick={() => sendMessage('Как получить доступ к Jira?')} style={{ padding: '8px 16px', background: '#fff', border: '1px solid #ccc', borderRadius: '20px', cursor: 'pointer' }}>🔐 Запросить доступ</button>
-        </div>
-
-        {/* Поле ввода */}
-        <div style={{ display: 'flex', gap: '10px', background: '#fff', padding: '10px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
-          <input 
-            value={input} 
-            onChange={(e) => setInput(e.target.value)} 
-            onKeyDown={(e) => e.key === 'Enter' && sendMessage(input)}
-            placeholder="Напиши сообщение..."
-            style={{ flex: 1, padding: '12px', border: 'none', outline: 'none', fontSize: '16px' }}
-          />
-          <button 
-            onClick={() => sendMessage(input)} 
-            disabled={loading}
-            style={{ padding: '12px 24px', background: AVITO_GREEN, border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}
-          >
-            Отправить
-          </button>
-        </div>
-
       </div>
     </div>
   )

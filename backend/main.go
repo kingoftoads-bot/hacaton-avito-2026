@@ -41,11 +41,6 @@ func main() {
 	r := gin.Default()
 	r.Use(cors.Default())
 
-	// ==========================================
-	// ЭНДПОИНТЫ ДЛЯ ТРЕКЕРА ЗАДАЧ И ПРОГРЕССА
-	// ==========================================
-
-	// 1. Прогресс
 	r.GET("/api/progress", func(c *gin.Context) {
 		var total, done int
 		db.QueryRow("SELECT COUNT(*) FROM tasks WHERE LOWER(period) LIKE '%недел%'").Scan(&total)
@@ -58,37 +53,49 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"total": total, "done": done, "percent": percent})
 	})
 
-	// 2. Получение списка задач для чекбоксов
 	r.GET("/api/tasks", func(c *gin.Context) {
-		query := `SELECT id, title, description, is_done FROM tasks 
-		          WHERE LOWER(period) LIKE '%недел%' 
-		          AND LOWER(title) NOT LIKE 'добавь%' 
-		          AND LOWER(title) NOT LIKE 'проверь%' 
-		          AND LOWER(title) NOT LIKE 'назначь%' 
-		          AND LOWER(title) NOT LIKE 'запроси%'
-		          AND LOWER(title) NOT LIKE 'работа с наставником%'`
+		periods := []string{"1 неделя", "2 неделя", "1 месяц", "2 месяц", "3 месяц"}
+		var resultTasks []map[string]interface{}
+		currentPeriod := ""
 
-		rows, err := db.Query(query)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "Ошибка БД"})
+		for _, p := range periods {
+			rows, err := db.Query(`SELECT id, title, description, is_done FROM tasks 
+			          WHERE LOWER(period) LIKE LOWER($1) 
+			          AND LOWER(title) NOT LIKE 'добавь%' 
+			          AND LOWER(title) NOT LIKE 'проверь%' 
+			          AND LOWER(title) NOT LIKE 'назначь%' 
+			          AND LOWER(title) NOT LIKE 'запроси%'
+			          AND LOWER(title) NOT LIKE 'работа с наставником%'
+			          AND is_done = FALSE`, "%"+p+"%")
+
+			if err == nil {
+				for rows.Next() {
+					var id int
+					var title, desc string
+					var isDone bool
+					rows.Scan(&id, &title, &desc, &isDone)
+					resultTasks = append(resultTasks, map[string]interface{}{
+						"id": id, "title": title, "description": desc, "is_done": isDone,
+					})
+				}
+				rows.Close()
+			}
+
+			if len(resultTasks) > 0 {
+				currentPeriod = p
+				break
+			}
+		}
+
+		if len(resultTasks) == 0 {
+			c.JSON(200, []interface{}{})
 			return
 		}
-		defer rows.Close()
 
-		var tasks []map[string]interface{}
-		for rows.Next() {
-			var id int
-			var title, desc string
-			var isDone bool
-			rows.Scan(&id, &title, &desc, &isDone)
-			tasks = append(tasks, map[string]interface{}{
-				"id": id, "title": title, "description": desc, "is_done": isDone,
-			})
-		}
-		c.JSON(200, tasks)
+		log.Printf("Отдаем задачи для периода: %s", currentPeriod)
+		c.JSON(200, resultTasks)
 	})
 
-	// 3. Отметка задачи выполненной
 	r.POST("/api/tasks/:id/complete", func(c *gin.Context) {
 		id := c.Param("id")
 		_, err := db.Exec("UPDATE tasks SET is_done = TRUE WHERE id = $1", id)
@@ -99,37 +106,104 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
-	// ==========================================
-	// ОСНОВНОЙ ЧАТ
-	// ==========================================
 	r.POST("/api/chat", func(c *gin.Context) {
 		var req struct {
 			Message string `json:"message"`
 			Role    string `json:"role"`
+			Name    string `json:"name"`
 		}
 		c.ShouldBindJSON(&req)
 
-		// Сценарий 1: Отгул
+		userName := req.Name
+		if userName == "" {
+			userName = "Стажёр"
+		}
+
 		if strings.Contains(strings.ToLower(req.Message), "отгул") || strings.Contains(strings.ToLower(req.Message), "отпуск") {
 			absID := fmt.Sprintf("ABS-%d", time.Now().Unix()%10000)
-			reply := fmt.Sprintf("📅 Я оформил для тебя заявку на отсутствие.\n\n**Номер заявки:** `%s`\n**Статус:** На согласовании у руководителя.\n\nЯ пришлю уведомление, когда заявку одобрят.", absID)
+			reply := fmt.Sprintf("📅 %s, я оформил для тебя заявку на отсутствие.\n\n*Номер заявки:* `%s`\n*Статус:* На согласовании у руководителя.\n\n**Следующий шаг:** Отследить статус можно в сервисе отсутствий.", userName, absID)
 			c.JSON(200, gin.H{"reply": reply})
 			return
 		}
 
-		// Сценарий 2: Доступы
 		if strings.Contains(strings.ToLower(req.Message), "доступ") || strings.Contains(strings.ToLower(req.Message), "jira") || strings.Contains(strings.ToLower(req.Message), "confluence") {
 			accID := fmt.Sprintf("ACC-%d", time.Now().Unix()%10000)
-			reply := fmt.Sprintf("🔐 Я создал заявку на доступ.\n\n**Номер заявки:** `%s`\n**Ресурс:** Jira / Confluence\n**Уровень прав:** Чтение\n\nЗаявка направлена владельцу проекта.", accID)
+			reply := fmt.Sprintf("🔐 %s, я создал заявку на доступ.\n\n*Номер заявки:* `%s`\n*Ресурс:* Jira / Confluence\n*Уровень прав:* Чтение\n*Статус:* Направлена владельцу проекта.\n\n**Следующий шаг:** Заявка появится в личном кабинете.", userName, accID)
 			c.JSON(200, gin.H{"reply": reply})
 			return
 		}
 
-		// Сценарий 3: Задачи (через LLM)
-		systemPrompt := `Ты — AI-buddy, дружелюбный ИИ-наставник стажёров Авито. 
-Если пользователь спрашивает про задачи (что делать, план на неделю и т.д.), напиши СТРОГО такую команду: [GET_TASKS: <период>]
-Где <период> — это "1 неделя", "1 месяц" или "3 месяц".
-На ЛЮБЫЕ другие вопросы (кто такие тимлиды, как дела, расскажи про Авито) отвечай кратко, вежливо и по делу.`
+		// Если просят задачи — сразу отдаем из базы, не спрашивая LLM
+		if strings.Contains(strings.ToLower(req.Message), "задачи") || strings.Contains(strings.ToLower(req.Message), "задач") {
+			periods := []string{"1 неделя", "2 неделя", "1 месяц", "2 месяц", "3 месяц"}
+			var tasks []string
+			foundPeriod := ""
+
+			for _, p := range periods {
+				query := `SELECT title, description FROM tasks 
+				          WHERE LOWER(period) LIKE LOWER($1) 
+				          AND LOWER(title) NOT LIKE 'добавь%' 
+				          AND LOWER(title) NOT LIKE 'проверь%' 
+				          AND LOWER(title) NOT LIKE 'назначь%' 
+				          AND LOWER(title) NOT LIKE 'запроси%'
+				          AND LOWER(title) NOT LIKE 'работа с наставником%'
+				          AND is_done = FALSE`
+
+				rows, err := db.Query(query, "%"+p+"%")
+				if err == nil {
+					for rows.Next() {
+						var title, desc string
+						rows.Scan(&title, &desc)
+						tasks = append(tasks, fmt.Sprintf("- %s: %s", title, desc))
+					}
+					rows.Close()
+				}
+				if len(tasks) > 0 {
+					foundPeriod = p
+					break
+				}
+			}
+
+			if len(tasks) > 0 {
+				var rawTasks strings.Builder
+				for _, t := range tasks {
+					rawTasks.WriteString(t + "\n")
+				}
+				beautifyPrompt := fmt.Sprintf("Ты — дружелюбный ИИ-наставник Авито. Вот список актуальных задач стажёра на период \"%s\":\n%s\nНапиши приветственное сообщение и перечисли эти задачи в виде красивого нумерованного списка. Обращайся на 'ты'.", foundPeriod, rawTasks.String())
+
+				beautifyReq := OllamaRequest{
+					Model:    ollamaModel,
+					Messages: []Message{{Role: "user", Content: beautifyPrompt}},
+					Stream:   false,
+				}
+				beautifyJson, _ := json.Marshal(beautifyReq)
+				client := &http.Client{Timeout: 2 * time.Minute}
+				beautifyResp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(beautifyJson))
+
+				if err == nil {
+					defer beautifyResp.Body.Close()
+					body2, _ := io.ReadAll(beautifyResp.Body)
+					var finalResp OllamaResponse
+					json.Unmarshal(body2, &finalResp)
+					if finalResp.Message.Content != "" {
+						replyText := finalResp.Message.Content
+						replyText += "\n\n---\n**Следующий шаг:** Выбери задачу в трекере справа и отметь её выполненной, когда закончишь."
+						c.JSON(200, gin.H{"reply": replyText})
+						return
+					}
+				}
+				c.JSON(200, gin.H{"reply": "Вот твои задачи на " + foundPeriod + ":\n\n" + rawTasks.String()})
+				return
+			}
+
+			c.JSON(200, gin.H{"reply": "Поздравляю! Ты выполнил все задачи на всех периодах. Ты молодец!"})
+			return
+		}
+
+		// На все остальные вопросы отвечает LLM
+		systemPrompt := fmt.Sprintf(`Ты — AI-buddy, дружелюбный ИИ-наставник стажёров Авито. 
+Ты общаешься со стажёром по имени %s (роль: %s). Обращайся к нему по имени.
+Отвечай кратко, вежливо и по делу.`, userName, req.Role)
 
 		ollamaReq := OllamaRequest{
 			Model: ollamaModel,
@@ -143,8 +217,9 @@ func main() {
 		jsonData, _ := json.Marshal(ollamaReq)
 		client := &http.Client{Timeout: 2 * time.Minute}
 		resp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(jsonData))
+
 		if err != nil {
-			c.JSON(500, gin.H{"error": "Ollama недоступна: " + err.Error()})
+			c.JSON(200, gin.H{"reply": "Извини, я временно не могу связаться с нейросетью. Попробуй позже."})
 			return
 		}
 		defer resp.Body.Close()
@@ -152,64 +227,8 @@ func main() {
 		body, _ := io.ReadAll(resp.Body)
 		var ollamaResp OllamaResponse
 		json.Unmarshal(body, &ollamaResp)
-		aiAnswer := ollamaResp.Message.Content
 
-		if strings.Contains(aiAnswer, "[GET_TASKS:") {
-			startIdx := strings.Index(aiAnswer, "[GET_TASKS:") + len("[GET_TASKS:")
-			endIdx := strings.Index(aiAnswer[startIdx:], "]")
-			period := "1 неделя"
-			if endIdx != -1 {
-				period = strings.TrimSpace(aiAnswer[startIdx : startIdx+endIdx])
-			}
-
-			query := `SELECT title, description FROM tasks 
-			          WHERE LOWER(period) LIKE LOWER($1) 
-			          AND LOWER(title) NOT LIKE 'добавь%' 
-			          AND LOWER(title) NOT LIKE 'проверь%' 
-			          AND LOWER(title) NOT LIKE 'назначь%' 
-			          AND LOWER(title) NOT LIKE 'запроси%'
-			          AND LOWER(title) NOT LIKE 'работа с наставником%'`
-
-			rows, err := db.Query(query, "%"+period+"%")
-			if err == nil {
-				var rawTasks strings.Builder
-				count := 0
-				for rows.Next() {
-					var title, desc string
-					rows.Scan(&title, &desc)
-					rawTasks.WriteString(fmt.Sprintf("- %s: %s\n", title, desc))
-					count++
-				}
-				rows.Close()
-
-				if count > 0 {
-					beautifyPrompt := fmt.Sprintf("Ты — дружелюбный ИИ-наставник Авито. Вот список задач стажёра на период \"%s\":\n%s\nНапиши приветственное сообщение и перечисли эти задачи в виде красивого нумерованного списка. Обращайся на 'ты'.", period, rawTasks.String())
-					beautifyReq := OllamaRequest{
-						Model:    ollamaModel,
-						Messages: []Message{{Role: "user", Content: beautifyPrompt}},
-						Stream:   false,
-					}
-					beautifyJson, _ := json.Marshal(beautifyReq)
-					beautifyResp, err := client.Post(ollamaURL+"/api/chat", "application/json", bytes.NewBuffer(beautifyJson))
-					if err == nil {
-						defer beautifyResp.Body.Close()
-						body2, _ := io.ReadAll(beautifyResp.Body)
-						var finalResp OllamaResponse
-						json.Unmarshal(body2, &finalResp)
-						if finalResp.Message.Content != "" {
-							c.JSON(200, gin.H{"reply": finalResp.Message.Content})
-							return
-						}
-					}
-					c.JSON(200, gin.H{"reply": "Вот твои задачи на " + period + ":\n\n" + rawTasks.String()})
-					return
-				}
-			}
-			c.JSON(200, gin.H{"reply": "На этот период задач пока нет."})
-			return
-		}
-
-		c.JSON(200, gin.H{"reply": aiAnswer})
+		c.JSON(200, gin.H{"reply": ollamaResp.Message.Content})
 	})
 
 	log.Printf("Сервер запущен. Модель: %s", ollamaModel)
